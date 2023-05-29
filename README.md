@@ -1,2 +1,156 @@
-# filstar
-filstar项目说明
+# FILSTAR现有功能
+ - 密封优化:
+    - Pledge任务到指定分组;  `lotus-miner sectors pledge <group>`
+    - 支持自定义多核心任务计算时CPU核心百分占比:默认92%核心参与计算;  `export YC_PARALLEL_NUM=50`
+    - 支持AP/tree-d模板:减少多核心占用时间;
+    - 支持AP任务等待队列:串行执行多核心任务;
+    - 支持tree-d任务等待队列:串行执行多核心任务;
+    - 支持Parents加乘优化;
+    - 支持data-layer断点续算:从中断位置继续计算,缩短重启维护时间;同时还支持原来删除重新计算;  `export YC_PC1_RECALCULATE=true`
+    - 支持hugepage计算PC1:大页效率优于SDR;计算模式自动适配,大页和SDR二选一;
+    - SDR绑定CPU核心:支持自定义分组;支持倒序排列;不使用0号核心组,消除互访类性能损耗;
+    - 支持多卡并行计算PC2:双卡效率提升30%;内存显卡资源会翻倍;PC2多卡并行开关;  `export FIL_PROOFS_GPU_SCALE=2`
+    - 支持远程C2:lotus通过filecoin-ffi调用rpc接口;  【弃用】
+ - 内存优化:
+    - 降低PC1内存消耗,节省内存并行更多的PC1;  `export FIL_PROOFS_USE_MEMPOOL=true`
+       - 支持PC1内存池优化:用内存小块来调度计算;(现 PC1内存 = 56G + SectorSize*(3n+1)/2,较之前性能提升20%)
+       - PC1内存池优化与data-layer断点续算冲突;  【需求】
+    - 降低C2内存消耗,节省内存并行更多的PC1;  `export YC_LIMIT_MEMORY=true`
+       - 支持C2内存限制:调整C2逻辑,将fft和mutliexp拆分10次;(现C2内存最多155GB,较之前节约50GB内存,但时间会拉长)
+ - 显存优化:
+    - PC2显卡复用:多路PC2任务并行;  【需求】
+    - 时空证明适配多种显卡,让显存低的显卡也能计算C2;  【需求】
+ - 消息优化:
+    - 增加WaitGas功能:Gas高不发消息,等Gas降低后再发,降低密封成本;  `lotus-miner sealing waitgas set --autocalcgas=false --p2-gas-max=10afil`
+    - 自动疏通消息池功能1.0:根据实时费率Fee自动调节消息Gas;         `lotus-miner sealing waitgas set --autocalcgas`
+    - 自动疏通消息池功能2.0:证明/恢复/续期消息使用auto直通模式发送;  `lotus-miner sealing waitgas set --autocalcgas`
+    - 增加强制提交C2消息功能:适用C2消息提交失败任务一直卡在Committing阶段;  `SwitchForceSubmitCommit`
+    - 优化聚合提交C2消息逻辑:每个epoch最多提交15条C2消息,减少OutOfGas的几率;
+    - Worker钱包零质押:质押金额不从Worker钱包出;   【弃用】 / 【官方已支持】 `CollateralFromMinerBalance`
+ - 安全优化:
+    - 钱包安全加密1.0:转账和导出删除私钥需要验证密码;
+    - 钱包安全加密2.0:密封消息不需要输入密码;兼容普通钱包RPC接口;向社区开源[钱包安全加密方案](https://github.com/cdcdx/lotus/commits/wallet-security)
+       - 增加钱包备注;          `lotus wallet mark add/del/clear`
+       - 钱包密码管理;          `lotus wallet passwd add/reset/clear`
+       - 普通钱包与加密钱包互换;  `lotus wallet encrypt/decrypt <f1xxx/f3xxx/all>`
+ - 存储优化:
+    - 支持共享存储:PC1/PC2共用缓存目录;
+    - 支持worker落盘:
+       - 支持落盘调度总开关:禁止所有落盘,方便运维切换;  `ALLOWREMOTEFINALIZE` / 【官方已支持】 `DisallowRemoteFinalize`
+       - 共享目录落盘开关;落盘存储异常自适应,落盘文件夹不存在时通过miner落盘;扇区源文件不存在目的文件已存在时跳过move;  `FetchToShared`
+       - 扇区文件相同落盘:保持扇区文件cache/sealed/unsealed落到同一存储目录;  `FetchToSamed`
+       - 支持存储目录落盘均衡:目录最多一个落盘任务;  `FetchTaskOnlyOne`
+       - 增加落盘限速功能,避免磁盘IO打满影响证明;  `export YC_RSYNC_LIMIT=148000`
+    - 启动加载存储目录扇区信息筛选:检测到非法文件直接跳过;检测到带扇区信息的非法文件直接跳过并删除;
+    - 支持动态修改存储列表相关参数;  `lotus-miner storage set --wid=<workerid> --sid=<storageid> --seal --store`
+    - 支持手动申明扇区位置;         `lotus-worker storage declare --sector=<sectorid> --ftype=<unsealed/sealed/cache> --storage=<storageid>`
+    - 增加存储目录sector_data缓存加载功能:启动加载存储时直接读sector_data缓存,不扫盘,缩短重启维护时间;  `IsReadOnly/IsWriteOnly` / `lotus-worker run --read-only --write-only`
+      - 增加存储目录sector_data缓存生成功能;  `lotus-miner storage init-sector-info` / `lotus-worker storage init-sector-info`
+    - 支持worker端落盘前需要对已存在的扇区文件校验大小;
+    - 支持miner端落盘前需要对已存在sealed文件校验大小;
+      - 增加Ding消息预警:删除异常扇区文件失败发送DingDing消息;
+    - 每次wdpost前都redeclare申明扇区位置:
+      - 扫描扇区文件不存在时重新扫描存储加载扇区位置:适用于post-miner和seal-miner分离的情况;
+    - 存储长期使用会出现静默翻转错误;  【需求】
+ - 调度优化:
+    - 支持任务最大数限制:控制任务个数,防止OOM;
+    - 支持随机秒延迟启动worker;
+    - 支持根据内存自动计算PC1最大任务数;
+    - 支持时空证明时PC1最大任务数;
+    - 支持worker分组:禁止跨组传输;
+    - 调整部分日志等级,减少无效日志输出;  `generate_sector_challenges / generate_fallback_sector_challenges / generate_single_vanilla_proof / generate_piece_commitment / redeclared`
+    - 支持高亮显示PC2/C1/C2/GET任务;
+    - 支持任务信息增强显示;                  `lotus-miner sealing workers` / `lotus-worker info`
+    - 支持任务关键字过滤:hostname/tasktype; `lotus-miner sealing workers/jobs --grep=<key>`
+    - 支持存储列表关键字过滤:ip; `lotus-miner storage list --grep=<key>`
+    - 支持存储列表类型过滤;     `lotus-miner storage list --seal/store/readonly`
+    - 显示`Processing`字段;   `lotus-miner sealing workers --all`
+    - 中止扇区增加扇区删除功能;  `lotus-miner sealing abort --remove --really-do-it <callid>`
+    - 增加扇区密封暂停功能:PC2和C2阶段不执行;  【需求】
+    - 支持纯CPU计算PC2:当显卡资源被占用时利用CPU来计算PC2;  【需求】
+    - 存在C2任务但因内存不足处于排队等待,此时来PC2任务,期望优先执行PC2任务;  【需求】
+    - 支持动态调整参数:不用重启使参数生效;支持批量修改;  `lotus-miner sealing setworkerparam --worker=<workerid> --key=<commit2max> --value=<value>`
+    - 支持动态修改环境变量:不用重启修改环境变量; `lotus-miner env list/get/set/unset` / `lotus-worker env list/get/set/unset`
+    - 支持当前扇区号自定义修改;  【弃用】 / 【官方已支持】 `lotus-miner sectors numbers reserve --force true 0-409999`
+    - 手动清理离线worker:
+       - 清理worker列表;   `lotus-miner sealing workers --clear`
+       - 清理storage列表;  `lotus-miner storage list --clear`
+    - 自动任务1.0:worker端自动任务;  【弃用】  `lotus-worker autotask --app1=12 --delay=360`
+       - 根据资源消耗自适应发放任务;根据Worker余额发放任务;
+       - 根据内存自动计算最大任务数;
+       - 判断两次发任务条件: 自动任务延迟时间 = 自定义delay + 120秒random + 60秒二次验证;
+       - 本地磁盘满时候不发任务;
+       - 自动任务文件锁:只启动一个进程;
+       - 增加Ding消息预警:自动任务超过一定时间未发新任务时发送DingDing消息;
+    - 自动任务2.0:miner端自动任务;  `lotus-miner autotask --delay=360`
+       - 自动任务文件锁:只启动一个进程;
+       - Worker磁盘占用达到90%不发任务;
+       - Store磁盘占用达到95%不发任务;  `lotus-miner env set --name=YC_STORE_SCALE --value=0.98`
+       - 任务黑名单:黑名单不发任务;
+       - lotus节点同步有问题不发任务;
+       - 自动任务扇区号最大值:扇区号达到最大值后不发任务;
+       - 根据worker数量来自动调整Worker钱包限额;  5FIL/worker
+       - 增加Ding消息预警:自动任务超过一定时间未发新任务时发送DingDing消息;
+    - 离线维护模式:  `lotus-worker maintenance --time=10`
+       - 不接受新任务;
+       - 上链任务继续完成;
+       - 未上链任务直接终止删除;
+       - 任务清零后关闭程序;
+    - 任务超时自动维护:
+       - 驱动丢失到时任务超时:需限制显卡功耗,重启worker;  【运维可手动实现】
+    - 过期扇区自动清理:过期扇区状态已删除,但文件未删除;
+    - 文件异常检测逻辑:
+       - 检测到AP/tree-d模板文件错误时,删除模板文件,并重新计算;  【需求】
+       - 检测到parent_cache缓存文件错误时,删除缓存文件,并重新计算;  【需求】
+    - wdpost调度优化:
+       - 增加Ding消息预警:wdpost计算错误时发送DingDing消息;
+       - miner重启后检测当前deadline证明消息是否发送,已提交不用重复计算;
+       - 检测到错误扇区会循环检测,进而导致整个partition失败:跳过错误扇区循环检测,先将正确的扇区先提交上链;
+       - wdpost增加跳过预检查功能;  【弃用】 / 【官方已支持】  `DisableWDPoStPreChecks`
+       - wdpost离线时空证明;  【弃用】 / 【官方已支持】  `lotus-miner proving compute window-post <deadline>`
+         - 指定扇区离线时空证明;
+         - 跳过指定扇区离线时空证明;
+       - wdpost增加batch并行功能:并发执行所有batch任务,不再等待,缩短证明时间;  【官方batch间的执行逻辑是串行】
+       - wdpost增加partition并行功能:将batch所有partition任务发到一个postworker上去执行;  【官方batch内的执行逻辑是将batch内的partition任务分散发到postworker】
+    - 分布式miner:
+       - 禁用证明miner:禁止时空证明功能,可批量校验扇区;     `lotus-miner run --windowpost=false --winningpost=false`
+       - 增加禁止证明命令接口:可以随时打开或关闭miner的证明功能;  【需求】 `lotus-miner service start --sealing/--window/--winning`
+       - wdpost增加指定batch功能:适用大节点分开证明的情况;  `export YC_CUSTOM_BATCH=0,1`
+       - wdpost增加跳过错误扇区恢复功能;                  `export YC_SKIP_RECOVERY=true`
+       - CPU一半核心做wnpost,CPU另一半核心+所有GPU做wdpost; 【通过命令taskset实现】
+       - 存储跨机房调度:分区证明;  【需求】
+ - 出块优化:
+    - multi-lotus节点高可用竞选模型;  【弃用】  /  【官方已支持】  /  【使用NginxLotus节点方案】
+    - 根据lotus节点评分自动维护Peer黑名单;  【需求】
+    - wdpost/wnpost合并读leaf:批量读文件,降低存储IO消耗;
+       - wdpost不用所有核心去读叶子;           `export RAYON_NUM_THREADS=56`
+       - 合并读leaf开关;                     `export YC_MERGE_READ=true` 
+       - p_aux异常或丢失会导致一整轮失败;  【需求】
+       - 扇区文件读取(丢失,异常)超时跳过逻辑,不影响其他扇区证明计算;  【需求】
+    - wdpost/wnpost资源竞争问题:
+       - CPU核心分离:CPU资源竞争引起的问题;
+         - PC2绑定CPU核心;
+         - C2绑定CPU核心;  【需求】
+       - GPU执行锁分离;  【弃用】 `export YC_CUSTOM_WN_GPU=true`
+    - 增加CallGPU服务:适应显卡节能模式;
+    - 增加时间同步服务:提高区块同步效率;
+    - 增加释放缓存服务:减少内存不足的情况,可能会降低panic发生几率;
+    - 延迟时间优化:减少孤块概率;  【弃用】 / 【官方已支持】 `PROPAGATION_DELAY_SECS`
+ - 其他优化:
+    - 将Miner的UUID固定设置为ffffffff-ffff-ffff-ffff-ffffffffffff;
+    - 阶段分离模式:任务可以重复计算某阶段;
+    - 扇区恢复功能1.0:单扇区恢复,最先向社区开源[扇区恢复功能](https://github.com/cdcdx/lotus/commits/sector-recovery);
+    - 扇区恢复功能2.0:集群恢复,扇区恢复像发任务一样简单;  `lotus-miner sectors recovery --really-do-it <sectorid>`
+        - 用链上数据恢复扇区:适配本地无元数据情况;
+        - 支持强制使用链上数据恢复扇区;   `lotus-miner sectors recovery --really-do-it --onchain <sectorid>`
+        - 支持输入多个扇区号;           `lotus-miner sectors recovery --really-do-it 0 1 2 3`
+        - 增加批量删除扇区元数据功能;  【需求】
+        - 增加批量按链上数据恢复扇区元数据功能;  【需求】
+        - Removed状态扇区无法恢复;  【遗留问题】
+        - 恢复完成以后进行CommR校验;  【遗留问题】
+        - FinalizeSector状态扇区无法恢复;  【遗留问题】
+        - 恢复完成以后替换逻辑:如果存在原文件将原文件重命名为.old然后落盘,如果不存在原文件直接落盘;  【遗留问题】
+        - lotus节点消息不全,若节点缺失某扇区消息无法恢复扇区:通过第三方公共节点(如infura.io)获取某扇区消息,从而恢复扇区;  【需求】
+    - 扇区恢复功能3.0:DC扇区恢复;
+        - 存在unsealed文件:直接使用原来的ticket重新计算;
+        - 不存在unsealed文件:通过CID重新获取文件来恢复;  【需求】
